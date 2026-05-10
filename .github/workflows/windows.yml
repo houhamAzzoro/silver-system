@@ -1,0 +1,228 @@
+name: Windows-RDP (Fully Working)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: System Info
+        run: |
+          Write-Host "=== OS Info ===" -ForegroundColor Cyan
+          Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber | Format-List
+          
+          Write-Host "=== GPU Info ===" -ForegroundColor Cyan
+          Get-CimInstance -ClassName Win32_VideoController | Select-Object Name, DriverVersion | Format-List
+
+      - name: Configure RDP Settings
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall add rule name="RDP-UDP" dir=in action=allow protocol=UDP localport=3389
+          
+          Restart-Service -Name TermService -Force
+
+      - name: Optimize RDP for Maximum Performance
+        run: |
+          $tsPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          $rdpTcpPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          
+          New-Item -Path $tsPath -Force -ErrorAction SilentlyContinue | Out-Null
+          
+          # 120 FPS
+          New-ItemProperty -Path $rdpTcpPath -Name "MaxFrameRate" -Value 120 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tsPath -Name "MaxFrameRate" -Value 120 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPath -Name "DWMFRAMEINTERVAL" -Value 8 -Type DWord -Force -ErrorAction SilentlyContinue
+          
+          # Enable UDP transport (faster)
+          New-ItemProperty -Path $tsPath -Name "SelectTransport" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          # Hardware acceleration
+          New-ItemProperty -Path $tsPath -Name "AVCHardwareEncodePreferred" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tsPath -Name "AVC444ModePreferred" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tsPath -Name "bEnumerateHWBeforeSW" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          # RemoteFX
+          New-ItemProperty -Path $tsPath -Name "fEnableVirtualizedGraphics" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tsPath -Name "fEnableRemoteFXAdvancedRemoteApp" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          # Disable throttling
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations' -Name "ThrottleEnabled" -Value 0 -Force -ErrorAction SilentlyContinue
+          
+          # Full color depth
+          New-ItemProperty -Path $rdpTcpPath -Name "ColorDepth" -Value 5 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          # Keep wallpaper and themes
+          New-ItemProperty -Path $tsPath -Name "fNoRemoteDesktopWallpaper" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tsPath -Name "fAllowDesktopCompositionOnServer" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          Write-Host "RDP optimized for 120 FPS!"
+
+      - name: Optimize Network for Long Distance (Morocco)
+        run: |
+          # TCP optimizations
+          netsh interface tcp set global autotuninglevel=experimental 2>$null
+          netsh interface tcp set global ecncapability=enabled 2>$null
+          netsh interface tcp set global timestamps=enabled 2>$null
+          netsh interface tcp set global rss=enabled 2>$null
+          netsh interface tcp set global fastopen=enabled 2>$null
+          netsh interface tcp set heuristics enabled 2>$null
+          netsh int tcp set supplemental Internet congestionprovider=ctcp 2>$null
+          
+          # Registry TCP optimizations
+          $tcpPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters'
+          New-ItemProperty -Path $tcpPath -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "TcpDelAckTicks" -Value 0 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "GlobalMaxTcpWindowSize" -Value 65535 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "TcpWindowSize" -Value 65535 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "Tcp1323Opts" -Value 3 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $tcpPath -Name "SackOpts" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          
+          # Disable Nagle's Algorithm (reduces latency)
+          $intPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces'
+          Get-ChildItem $intPath | ForEach-Object {
+            New-ItemProperty -Path $_.PSPath -Name "TcpAckFrequency" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+            New-ItemProperty -Path $_.PSPath -Name "TCPNoDelay" -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue
+          }
+          
+          Write-Host "Network optimized!"
+
+      - name: Apply Glow Theme
+        run: |
+          reg load HKU\DefaultUser "C:\Users\Default\NTUSER.DAT"
+          
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme /t REG_DWORD /d 0 /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v SystemUsesLightTheme /t REG_DWORD /d 0 /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v EnableTransparency /t REG_DWORD /d 1 /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v ColorPrevalence /t REG_DWORD /d 1 /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\DWM" /v AccentColor /t REG_DWORD /d 0xffb4a0ff /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\DWM" /v ColorizationColor /t REG_DWORD /d 0xc4b4a0ff /f
+          reg add "HKU\DefaultUser\SOFTWARE\Microsoft\Windows\DWM" /v EnableWindowColorization /t REG_DWORD /d 1 /f
+          
+          [gc]::Collect()
+          Start-Sleep -Seconds 2
+          reg unload HKU\DefaultUser
+          
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v AppsUseLightTheme /t REG_DWORD /d 0 /f
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize" /v SystemUsesLightTheme /t REG_DWORD /d 0 /f
+
+      - name: Set High Performance Power Plan
+        run: |
+          # Set to High Performance
+          powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+          
+          # Set CPU to 100%
+          powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 bc5038f7-23e0-4960-96da-33abaf5935ec 100
+          powercfg /setacvalueindex SCHEME_CURRENT 54533251-82be-4824-96c1-47b60b740d00 893dee8e-2bef-41e0-89c6-b55d0929964c 100
+          
+          # Disable sleep
+          powercfg /setacvalueindex SCHEME_CURRENT 238c9fa8-0aad-41ed-83f4-97be242c8f20 29f6c1db-86da-48c5-9fdb-f2b67b1f44da 0
+          
+          powercfg /setactive SCHEME_CURRENT
+
+      - name: Disable UAC
+        run: |
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "EnableLUA" -Value 0 -Force
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorAdmin" -Value 0 -Force
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "ConsentPromptBehaviorUser" -Value 0 -Force
+
+      - name: Disable Unnecessary Services (Speed Up)
+        run: |
+          # Disable services that slow down RDP
+          $servicesToDisable = @(
+            "DiagTrack",           # Telemetry
+            "SysMain",             # Superfetch
+            "WSearch",             # Windows Search
+            "Spooler"              # Print Spooler
+          )
+          
+          foreach ($service in $servicesToDisable) {
+            Stop-Service -Name $service -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $service -StartupType Disabled -ErrorAction SilentlyContinue
+          }
+          
+          Write-Host "Unnecessary services disabled!"
+
+      - name: Create Admin User Kaiden
+        run: |
+          secedit /export /cfg C:\secpol.cfg
+          (Get-Content C:\secpol.cfg).Replace("PasswordComplexity = 1", "PasswordComplexity = 0") | Set-Content C:\secpol.cfg
+          (Get-Content C:\secpol.cfg) -replace "MinimumPasswordLength = \d+", "MinimumPasswordLength = 1" | Set-Content C:\secpol.cfg
+          secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY
+          Remove-Item C:\secpol.cfg -Force
+          
+          $securePass = ConvertTo-SecureString "@kaiden" -AsPlainText -Force
+          New-LocalUser -Name "kaiden" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+          
+          Add-LocalGroupMember -Group "Administrators" -Member "kaiden"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "kaiden"
+
+      - name: Restart RDP Service
+        run: |
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 3
+
+      - name: Install Tailscale
+        run: |
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Connect Tailscale
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=windows-rdp-$env:GITHUB_RUN_ID
+          
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+          
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned"
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Display Connection Info
+        run: |
+          Write-Host ""
+          Write-Host "============================================" -ForegroundColor Cyan
+          Write-Host "     Windows Server 2025 RDP (FAST)         " -ForegroundColor Cyan
+          Write-Host "============================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "  Address:    $env:TAILSCALE_IP" -ForegroundColor Green
+          Write-Host "  Username:   kaiden" -ForegroundColor Green
+          Write-Host "  Password:   @kaiden" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "  FPS:        120" -ForegroundColor Yellow
+          Write-Host "  Theme:      Glow (Dark)" -ForegroundColor Yellow
+          Write-Host "  Access:     Admin (Full)" -ForegroundColor Yellow
+          Write-Host ""
+          Write-Host "  Optimizations:" -ForegroundColor Yellow
+          Write-Host "    - UDP transport enabled" -ForegroundColor White
+          Write-Host "    - Hardware acceleration" -ForegroundColor White
+          Write-Host "    - Throttling disabled" -ForegroundColor White
+          Write-Host "    - TCP latency optimized" -ForegroundColor White
+          Write-Host "    - Unnecessary services disabled" -ForegroundColor White
+          Write-Host ""
+          Write-Host "============================================" -ForegroundColor Cyan
+
+      - name: Keep Alive
+        run: |
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active: $env:TAILSCALE_IP"
+              Start-Sleep -Seconds 300
+          }
